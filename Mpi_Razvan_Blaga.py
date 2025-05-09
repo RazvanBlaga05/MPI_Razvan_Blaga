@@ -12,13 +12,12 @@ class SolverInterface:
             'R': self._run_resolution,
             'D': self._run_dp,
             'L': self._run_dpll,
+            'B': self._run_batch_test,
             'X': exit
         }
 
     def display_header(self):
-        print("╔════════════════════════════╗")
-        print("║  CLAUSE SOLVER 9000        ║")
-        print("╚════════════════════════════╝")
+        print("\u2554\u2550\u2550\u2550\u2550 CLAUSE SOLVER 9000 \u2550\u2550\u2550\u2550")
 
     def show_main_menu(self):
         while True:
@@ -27,14 +26,15 @@ class SolverInterface:
             print("\nLast 10 actions:")
             for i, action in enumerate(reversed(self.history), 1):
                 print(f"{i}. {action}")
-            
+
             print("\nAvailable Methods:")
             print("[R]esolution   [D]avis-Putnam")
-            print("[L]DPLL        E[x]it")
-            
+            print("[L]DPLL        [B]atch Test")
+            print("E[x]it")
+
             choice = input("\nSelect operation: ").upper()
             self.history.append(f"Selected: {choice}")
-            
+
             if choice in self.methods:
                 if choice == 'X':
                     print("Goodbye!")
@@ -43,7 +43,7 @@ class SolverInterface:
                 input("\nPress any key to continue...")
             else:
                 self.history.append("Invalid selection!")
-                print("Invalid option - try R, D, L, or X")
+                print("Invalid option - try R, D, L, B or X")
 
     def _clear_screen(self):
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -64,25 +64,11 @@ class SolverInterface:
 
     def _run_resolution(self):
         self.clauses = self._get_clauses()
-        tracemalloc.start()
-        start = time.perf_counter()
-        result = self._execute_resolution(self.clauses)
-        elapsed = time.perf_counter() - start
-        current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
-        print(f"\nRESOLUTION RESULT: {'SATISFIABLE' if result else 'UNSATISFIABLE'}")
-        print(f"Time: {elapsed:.4f}s | Memory: {peak / 1024:.2f} KB")
+        self._execute_with_metrics(self._execute_resolution, self.clauses, "RESOLUTION")
 
     def _run_dp(self):
         self.clauses = self._get_clauses()
-        tracemalloc.start()
-        start = time.perf_counter()
-        result = self._execute_dp(self.clauses)
-        elapsed = time.perf_counter() - start
-        current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
-        print(f"\nDP RESULT: {'SATISFIABLE' if result else 'UNSATISFIABLE'}")
-        print(f"Time: {elapsed:.4f}s | Memory: {peak / 1024:.2f} KB")
+        self._execute_with_metrics(self._execute_dp, self.clauses, "DP")
 
     def _run_dpll(self):
         self.clauses = self._get_clauses()
@@ -91,32 +77,69 @@ class SolverInterface:
         print("2. Jeroslow-Wang")
         choice = input("Select (1/2): ").strip()
         strategy = "classic" if choice == "1" else "jeroslow-wang"
+        self._execute_with_metrics(lambda x: self._execute_dpll(x, strategy), self.clauses, f"DPLL ({strategy})")
 
+    def _execute_with_metrics(self, func, clauses, label):
         tracemalloc.start()
         start = time.perf_counter()
-        result = self._execute_dpll(self.clauses, strategy)
+        result = func(copy.deepcopy(clauses))
         elapsed = time.perf_counter() - start
         current, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        print(f"\nDPLL RESULT ({strategy}): {'SATISFIABLE' if result else 'UNSATISFIABLE'}")
+        print(f"\n{label} RESULT: {'SATISFIABLE' if result else 'UNSATISFIABLE'}")
         print(f"Time: {elapsed:.4f}s | Memory: {peak / 1024:.2f} KB")
 
+    def _run_batch_test(self):
+        paths = input("\nEnter CNF file paths separated by space: ").split()
+        results = []
+        for path in paths:
+            clauses = self._parse_dimacs(path)
+            for method, func in [('R', self._execute_resolution), ('D', self._execute_dp)]:
+                res = self._test_case(func, clauses, method, path)
+                results.append(res)
+            for strategy in ['classic', 'jeroslow-wang']:
+                res = self._test_case(lambda x: self._execute_dpll(x, strategy), clauses, f"L-{strategy}", path)
+                results.append(res)
+        self._display_results_table(results)
+
+    def _test_case(self, func, clauses, label, file):
+        tracemalloc.start()
+        start = time.perf_counter()
+        result = func(copy.deepcopy(clauses))
+        elapsed = time.perf_counter() - start
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        return {'file': file, 'method': label, 'result': 'SAT' if result else 'UNSAT', 'time': elapsed, 'memory_kb': peak / 1024}
+
+    def _display_results_table(self, results):
+        print("\nCOMPARATIVE RESULTS:")
+        print(f"{'File':<20} {'Method':<15} {'Result':<10} {'Time(s)':<10} {'Memory(KB)':<12}")
+        for r in results:
+            print(f"{r['file']:<20} {r['method']:<15} {r['result']:<10} {r['time']:<10.4f} {r['memory_kb']:<12.2f}")
+
+    def _parse_dimacs(self, path):
+        clauses = []
+        with open(path) as f:
+            for line in f:
+                if line.startswith('c') or line.startswith('p') or not line.strip():
+                    continue
+                tokens = line.strip().split()
+                if tokens[-1] == '0':
+                    tokens = tokens[:-1]
+                clauses.append(set(tokens))
+        return clauses
+
     def _jeroslow_wang_heuristic(self, clauses):
-        """Calculează scorul JW pentru fiecare literal."""
-        scor = {}
+        score = {}
         for clause in clauses:
             for lit in clause:
-                scor[lit] = scor.get(lit, 0.0) + (2 ** -len(clause))
-        return max(scor.items(), key=lambda x: x[1])[0] if scor else None
+                score[lit] = score.get(lit, 0.0) + (2 ** -len(clause))
+        return max(score.items(), key=lambda x: x[1])[0] if score else None
 
     def _execute_resolution(self, K):
         k_prim = copy.deepcopy(K)
-        cont = 1
         while True:
             R = self._find_resolvent(k_prim)
-            print(f"\nStep {cont}")
-            cont += 1
-            print("Resolvent:", R)
             if R is None: return True
             if R == set(): return False
             k_prim.append(R)
@@ -142,23 +165,40 @@ class SolverInterface:
         while True:
             if k_prim is None: return True
             if any(not C for C in k_prim): return False
-            
+
             unit = next((C for C in k_prim if len(C) == 1), None)
             if unit:
                 L = next(iter(unit))
-                print(f"\nUnit propagate: {L}")
                 k_prim = self._propagate_unit(k_prim, L)
-                print("Clauses:", k_prim)
                 continue
-            
+
             pure = self._find_pure(k_prim)
             if pure:
-                print(f"\nPure literal: {pure}")
                 k_prim = [C for C in k_prim if pure not in C]
-                print("Clauses:", k_prim)
                 continue
-            
+
             return self._execute_resolution(k_prim)
+
+    def _execute_dpll(self, K, strategy="classic"):
+        k_prim = copy.deepcopy(K)
+        if any(not C for C in k_prim): return False
+        if not k_prim: return True
+
+        unit = next((C for C in k_prim if len(C) == 1), None)
+        if unit:
+            L = next(iter(unit))
+            return self._execute_dpll(self._propagate_unit(k_prim, L), strategy)
+
+        pure = self._find_pure(k_prim)
+        if pure:
+            k_prim = [C for C in k_prim if pure not in C]
+            return self._execute_dpll(k_prim, strategy)
+
+        L = self._jeroslow_wang_heuristic(k_prim) if strategy == "jeroslow-wang" else next(iter(k_prim[0]))
+        if not L: return True
+        if self._execute_dpll(self._propagate_unit(k_prim, L), strategy):
+            return True
+        return self._execute_dpll(self._propagate_unit(k_prim, L[1:] if L.startswith("-") else f"-{L}"), strategy)
 
     def _propagate_unit(self, clauses, L):
         comp = L[1:] if L.startswith("-") else f"-{L}"
@@ -180,43 +220,6 @@ class SolverInterface:
             if comp not in literals:
                 return lit
         return None
-
-    def _execute_dpll(self, K, strategy="classic"):
-        k_prim = copy.deepcopy(K)
-        while True:
-            if k_prim is None: return True
-            if any(not C for C in k_prim): return False
-            
-            unit = next((C for C in k_prim if len(C) == 1), None)
-            if unit:
-                L = next(iter(unit))
-                print(f"\nUnit propagate: {L}")
-                k_prim = self._propagate_unit(k_prim, L)
-                print("Clauses:", k_prim)
-                continue
-            
-            pure = self._find_pure(k_prim)
-            if pure:
-                print(f"\nPure literal: {pure}")
-                k_prim = [C for C in k_prim if pure not in C]
-                print("Clauses:", k_prim)
-                continue
-            
-            if not k_prim: return True
-            
-            if strategy == "jeroslow-wang":
-                L = self._jeroslow_wang_heuristic(k_prim)
-            else:
-                L = next(iter(k_prim[0])) if k_prim else None
-                
-            if not L: return True
-            
-            print(f"\nBranching on: {L} (strategy: {strategy})")
-            if self._execute_dpll(self._propagate_unit(k_prim.copy(), L), strategy):
-                return True
-            print(f"\nBranching on: ¬{L} (strategy: {strategy})")
-            return self._execute_dpll(self._propagate_unit(k_prim.copy(), 
-                L[1:] if L.startswith("-") else f"-{L}"), strategy)
 
 if __name__ == "__main__":
     app = SolverInterface()
